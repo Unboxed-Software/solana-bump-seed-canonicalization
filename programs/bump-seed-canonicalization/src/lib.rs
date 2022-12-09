@@ -53,6 +53,18 @@ pub mod bump_seed_canonicalization {
         msg!("User: {}", account.user);
         Ok(())
     }
+
+    pub fn initialize_with_anchor(ctx: Context<InitializeAnchor>, value: u64) -> Result<()> {
+        ctx.accounts.data.value = value;
+        // store the bump on the account
+        ctx.accounts.data.bump = *ctx.bumps.get("data").unwrap();
+        Ok(())
+    }
+
+    pub fn verify_address(ctx: Context<VerifyAddress>) -> Result<()> {
+        msg!("PDA confirmed to be derived with canonical bump: {}", ctx.accounts.data.key());
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -63,6 +75,33 @@ pub struct Initialize<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+// initialize account at PDA via Anchor constraints
+#[derive(Accounts)]
+pub struct InitializeAnchor<'info> {
+        #[account(mut)]
+        payer: Signer<'info>,
+        #[account(
+                init,
+                seeds = [DATA_PDA_SEED.as_bytes()],
+                // derives the PDA using the canonical bump
+                bump,
+                payer = payer,
+                space = 8 + 8 + 1
+            )]
+        data: Account<'info, Data>,
+        system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+pub struct VerifyAddress<'info> {
+    #[account(
+			seeds = [DATA_PDA_SEED.as_bytes()],
+            // guranteed to be the canonical bump every time
+			bump = data.bump
+		)]
+    data: Account<'info, Data>,
 }
 
 #[derive(Accounts)]
@@ -89,8 +128,6 @@ pub struct Data {
     // bump field
     bump: u8
 }
-
-
 
 /* ************************************************************ */
 
