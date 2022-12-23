@@ -121,8 +121,41 @@ describe("bump-seed-canonicalization", async () => {
       .signers([attacker])
       .rpc()
 
+    let numClaims = 1
+
+    for (let i = 0; i < 256; i++) {
+      try {
+        const pda = createProgramAddressSync(
+          [attacker.publicKey.toBuffer(), Buffer.from([i])],
+          program.programId
+        )
+        await program.methods
+          .createUserSecure()
+          .accounts({
+            user: pda,
+            payer: attacker.publicKey,
+          })
+          .signers([attacker])
+          .rpc()
+
+        await program.methods
+          .claimSecure()
+          .accounts({
+            payer: attacker.publicKey,
+            userAta: ataKey,
+            mint,
+            user: pda,
+          })
+          .signers([attacker])
+          .rpc()
+
+        numClaims += 1
+      } catch {}
+    }
+
     const ata = await getAccount(provider.connection, ataKey)
 
     expect(Number(ata.amount)).to.equal(10)
+    expect(numClaims).to.equal(1)
   })
 })

@@ -83,7 +83,7 @@ pub mod bump_seed_canonicalization {
     }
 
     pub fn create_user_secure(ctx: Context<CreateUserSecure>) -> Result<()> {
-        // store the bump on the account
+        ctx.accounts.user.auth = ctx.accounts.payer.key();
         ctx.accounts.user.bump = *ctx.bumps.get("user").unwrap();
         ctx.accounts.user.rewards_claimed = false;
         Ok(())
@@ -133,7 +133,7 @@ pub struct CreateUserSecure<'info> {
         // derives the PDA using the canonical bump
         bump,
         payer = payer,
-        space = 8 + 32 + 1 + 1
+        space = 8 + 32 + 1 + 1,
     )]
     user: Account<'info, UserSecure>,
     system_program: Program<'info, System>,
@@ -169,7 +169,8 @@ pub struct SecureClaim<'info> {
     #[account(
         seeds = [payer.key().as_ref()],
         bump = user.bump,
-        constraint = !user.rewards_claimed @ ClaimError::AlreadyClaimed
+        constraint = !user.rewards_claimed @ ClaimError::AlreadyClaimed,
+        constraint = user.auth == payer.key()
     )]
     user: Account<'info, UserSecure>,
     #[account(mut)]
