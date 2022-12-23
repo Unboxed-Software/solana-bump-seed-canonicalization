@@ -13,7 +13,7 @@ pub mod bump_seed_canonicalization {
 
     // insecure, allows for creation of multiple accounts for given set of seeds
     pub fn create_user_insecure(ctx: Context<CreateUserInsecure>, bump_seed: u8) -> Result<()> {
-        let space = 8 + 32 + 1;
+        let space = 32 + 1;
         let lamports = Rent::get()?.minimum_balance(space as usize);
 
         let ix = anchor_lang::solana_program::system_instruction::create_account(
