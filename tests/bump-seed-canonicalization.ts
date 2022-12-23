@@ -1,140 +1,128 @@
 import * as anchor from "@project-serum/anchor"
 import { Program } from "@project-serum/anchor"
 import {
+  createProgramAddressSync,
   findProgramAddressSync,
 } from "@project-serum/anchor/dist/cjs/utils/pubkey"
 import { expect } from "chai"
 import { BumpSeedCanonicalization } from "../target/types/bump_seed_canonicalization"
-import { PublicKey, Keypair, SystemProgram } from '@solana/web3.js'
-import { safeAirdrop, findNonCanonicalPda } from './utils/utils'
+import { Keypair } from "@solana/web3.js"
+import { safeAirdrop } from "./utils/utils"
 import { BN } from "bn.js"
+import {
+  createAssociatedTokenAccount,
+  createMint,
+  getAccount,
+  getAssociatedTokenAddress,
+} from "@solana/spl-token"
 
 describe("bump-seed-canonicalization", async () => {
   // Initialize testing environment
-  anchor.setProvider(anchor.AnchorProvider.env())
-  const provider = anchor.AnchorProvider.env()
-  const program = anchor.workspace.BumpSeedCanonicalization as Program<BumpSeedCanonicalization>
+  let provider, program, payer, mintAuthority, mint
 
-  // payer for creation of accounts
-  const payer = Keypair.generate()
-
-  // derive first PDA using canonical bump
-  const [pda, bump] = findProgramAddressSync([], program.programId)
-  console.log("First canonical PDA:", pda.toString())
-  console.log("Canonical bump:", bump)
-
-  // derive second PDA using a non-canonical bump
-  const [pda_not_canonical, not_canonical_bump] = await findNonCanonicalPda(
-    [],
-    program.programId
-  )
-  console.log("First non-canonical PDA:", pda_not_canonical.toString())
-  console.log("Non-canonical bump:", not_canonical_bump)
-
-
-  it("Initialize PDA using canonical bump", async () => {
-    await program.methods.initialize(bump).accounts({ pda: pda }).rpc()
-  })
-
-  it("Initialize PDA using non-canonical bump", async () => {
-    await program.methods
-      .initialize(not_canonical_bump)
-      .accounts({ pda: pda_not_canonical })
-      .rpc()
-  })
-
-  it("Verify PDA with canonical bump", async () => {
-    await program.methods.insecure(bump).accounts({ pda: pda }).rpc()
-  })
-
-  it("Verify PDA with non-canonical bump", async () => {
-    await program.methods
-      .insecure(not_canonical_bump)
-      .accounts({ pda: pda_not_canonical })
-      .rpc()
-  })
-
-  it("Create new account with canonnical bump via Anchor constraints", async () => {
-    // payer needs SOL to pay for account creation
+  before(async () => {
+    anchor.setProvider(anchor.AnchorProvider.env())
+    provider = anchor.AnchorProvider.env()
+    program = anchor.workspace
+      .BumpSeedCanonicalization as Program<BumpSeedCanonicalization>
+    payer = Keypair.generate()
     await safeAirdrop(payer.publicKey, provider.connection)
-
-    const pda_seed = "test-seed"
-    const value = 55
-    const [pda_canonical, canonical_bump] = await PublicKey.findProgramAddress(
-      [Buffer.from(pda_seed)],
+    ;[mintAuthority] = findProgramAddressSync(
+      [Buffer.from("mint")],
       program.programId
     )
 
-    console.log("Second canonical PDA:", pda_canonical.toString())
-    console.log("Canonical bump:", canonical_bump)
-
-    await program.methods.initializeWithAnchor(new BN(value))
-    .accounts({
-      payer: payer.publicKey,
-      data: pda_canonical,
-      systemProgram: SystemProgram.programId
-    })
-    .signers([payer])
-    .rpc()
+    mint = await createMint(
+      provider.connection,
+      payer,
+      mintAuthority,
+      mintAuthority,
+      0
+    )
   })
 
-  // this test should fail because Anchor will not initalize an account at a PDA that is not derived with the canonical bump
-  it("Create new account with non-canonnical bump via Anchor constraints (should fail)", async () => {
-    // same seed as test above
-    const pda_seed = "test-seed"
-    // derive PDA using the same seed as before, but use a different bump that is not the canonical bump
-    const [non_canonical_pda, non_canonical_bump] = await findNonCanonicalPda(
-      [Buffer.from(pda_seed)],
-      program.programId
-    )
-    console.log("Second non-canonical PDA:", non_canonical_pda.toString())
-    console.log("Non-canonical bump:", non_canonical_bump)
-    try {
-      await program.methods.initializeWithAnchor(new BN(non_canonical_bump))
-      .accounts({
-        payer: payer.publicKey,
-        data: non_canonical_pda,
-        systemProgram: SystemProgram.programId
-      })
-      .signers([payer])
-      .rpc()
-    } catch (e) {
-      console.log(e.message)
-      expect(e.message).to.eq("failed to send transaction: Transaction simulation failed: Error processing Instruction 0: Cross-program invocation with unauthorized signer or writable account")
-    }
-  })
+  it("Attacker can claim more than reward limit with insecure instructions", async () => {
+    const attacker = Keypair.generate()
+    await safeAirdrop(attacker.publicKey, provider.connection)
+    const ataKey = await getAssociatedTokenAddress(mint, attacker.publicKey)
 
-  it("Verify address of account PDA via Anchor constraints with canonical bump", async () => {
-    const pda_seed = "test-seed"
-    const [pda_canonical, canonical_bump] = await PublicKey.findProgramAddress(
-      [Buffer.from(pda_seed)],
-      program.programId
-    )
+    let numClaims = 0
 
-    await program.methods.verifyAddress()
-    .accounts({
-      data: pda_canonical,
-    })
-    .rpc()
-  })
+    for (let i = 0; i < 256; i++) {
+      try {
+        const pda = createProgramAddressSync(
+          [attacker.publicKey.toBuffer(), Buffer.from([i])],
+          program.programId
+        )
+        await program.methods
+          .createUserInsecure(i)
+          .accounts({
+            user: pda,
+            payer: attacker.publicKey,
+          })
+          .signers([attacker])
+          .rpc()
+        await program.methods
+          .claimInsecure(i)
+          .accounts({
+            user: pda,
+            mint,
+            payer: attacker.publicKey,
+            userAta: ataKey,
+          })
+          .signers([attacker])
+          .rpc()
 
-  it("Try to verify address of non-canonical pda (should fail)", async () => {
-    const pda_seed = "test-seed"
-    const [non_canonical_pda, non_canonical_bump] = await findNonCanonicalPda(
-      [Buffer.from(pda_seed)],
-      program.programId
-    )
-
-    try {
-      const createAcctTx = await program.methods.verifyAddress()
-      .accounts({
-        data: non_canonical_pda,
-      })
-      .rpc()
-      console.log("Verify PDA account via Anchor constraints: ", createAcctTx)
-    } catch (e) {
-        console.log(e.message)
-        expect(e.message).to.eq("AnchorError caused by account: data. Error Code: AccountNotInitialized. Error Number: 3012. Error Message: The program expected this account to be already initialized.")
+        numClaims += 1
+      } catch (error) {
+        if (
+          error.message !== "Invalid seeds, address must fall off the curve"
+        ) {
+          console.log(error)
+        }
       }
+    }
+
+    const ata = await getAccount(provider.connection, ataKey)
+
+    console.log(
+      `Attacker claimed ${numClaims} times and got ${Number(ata.amount)} tokens`
+    )
+
+    expect(numClaims).to.be.greaterThan(1)
+    expect(Number(ata.amount)).to.be.greaterThan(10)
+  })
+
+  it("Attacker can only claim once with secure instructions", async () => {
+    const attacker = Keypair.generate()
+    await safeAirdrop(attacker.publicKey, provider.connection)
+    const ataKey = await getAssociatedTokenAddress(mint, attacker.publicKey)
+    const [userPDA] = findProgramAddressSync(
+      [attacker.publicKey.toBuffer()],
+      program.programId
+    )
+
+    await program.methods
+      .createUserSecure()
+      .accounts({
+        payer: attacker.publicKey,
+      })
+      .signers([attacker])
+      .rpc()
+
+    await program.methods
+      .claimSecure()
+      .accounts({
+        payer: attacker.publicKey,
+        userAta: ataKey,
+        mint,
+        user: userPDA,
+      })
+      .signers([attacker])
+      .rpc()
+
+    const ata = await getAccount(provider.connection, ataKey)
+
+    expect(Number(ata.amount)).to.equal(10)
   })
 })
