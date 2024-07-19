@@ -167,6 +167,7 @@ pub struct InsecureClaim<'info> {
 #[derive(Accounts)]
 pub struct SecureClaim<'info> {
     #[account(
+        mut,
         seeds = [payer.key().as_ref()],
         bump = user.bump,
         constraint = !user.rewards_claimed @ ClaimError::AlreadyClaimed,
