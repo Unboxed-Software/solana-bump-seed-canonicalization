@@ -39,7 +39,7 @@ describe("Bump seed canonicalization", () => {
     mint = await createMint(connection, payer, mintAuthority, mintAuthority, 0);
   });
 
-  it("allows attacker to claim more than reward limit with insecure instructions", async () => {
+  it("allows attacker to claim more than reward limit with insecure instruction handlers", async () => {
     try {
       const attacker = Keypair.generate();
       await airdropIfRequired(
