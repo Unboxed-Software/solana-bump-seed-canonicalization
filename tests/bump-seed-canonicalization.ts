@@ -90,7 +90,6 @@ describe("Bump seed canonicalization", () => {
               "Invalid seeds, address must fall off the curve"
             )
           ) {
-            // Comment console error logs to see the test outputs properly
             console.error(error);
           }
         }
@@ -188,8 +187,14 @@ describe("Bump seed canonicalization", () => {
 
           numClaims += 1;
         } catch (error) {
-          if (error instanceof Error && !error.message.includes("0x7d3")) {
-             // Comment console error logs to see the test outputs properly
+          if (
+            error instanceof Error &&
+            !error.message.includes("Error Number: 2006") &&
+            !error.message.includes(
+              "Invalid seeds, address must fall off the curve"
+            )
+          ) {
+            // Comment console error logs to see the test outputs properly
             console.error(error);
           }
         }
