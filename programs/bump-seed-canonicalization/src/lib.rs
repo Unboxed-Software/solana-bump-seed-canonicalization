@@ -3,24 +3,25 @@ use anchor_spl::{
     associated_token::AssociatedToken,
     token::{self, Mint, MintTo, Token, TokenAccount},
 };
-use borsh::{BorshDeserialize, BorshSerialize};
 
-declare_id!("HEeTz7bVJ5qSeTsPREXcyg6KCVjKW1gLogVaGXR6cwvU");
+declare_id!("2aUjVCUm1awbmv8aZHZZ2gUzDxoRzFfrFc9CuubDqycn");
+
+pub const DISCRIMINATOR_SIZE: usize = 8;
 
 #[program]
 pub mod bump_seed_canonicalization {
     use super::*;
 
-    // insecure, allows for creation of multiple accounts for given set of seeds
+    // Insecure, allows for creation of multiple accounts for given set of seeds
     pub fn create_user_insecure(ctx: Context<CreateUserInsecure>, bump_seed: u8) -> Result<()> {
-        let space = 32 + 1;
-        let lamports = Rent::get()?.minimum_balance(space as usize);
+        let space = DISCRIMINATOR_SIZE + UserInsecure::INIT_SPACE;
+        let lamports = Rent::get()?.minimum_balance(space);
 
         let ix = anchor_lang::solana_program::system_instruction::create_account(
             &ctx.accounts.payer.key(),
             &ctx.accounts.user.key(),
             lamports,
-            space,
+            space as u64,
             &ctx.program_id,
         );
 
@@ -34,32 +35,37 @@ pub mod bump_seed_canonicalization {
             &[&[ctx.accounts.payer.key().as_ref(), &[bump_seed]]],
         )?;
 
-        let mut user = UserInsecure::try_from_slice(&ctx.accounts.user.data.borrow()).unwrap();
-
-        user.auth = ctx.accounts.payer.key();
-        user.rewards_claimed = false;
-        user.serialize(&mut *ctx.accounts.user.data.borrow_mut())?;
+        // Manually serialize the UserInsecure data
+        let user_data = UserInsecure {
+            auth: ctx.accounts.payer.key(),
+            rewards_claimed: false,
+        };
+        let data = user_data.try_to_vec()?;
+        let mut user_account_data = ctx.accounts.user.try_borrow_mut_data()?;
+        user_account_data[DISCRIMINATOR_SIZE..].copy_from_slice(&data);
 
         msg!("User: {}", ctx.accounts.user.key());
-        msg!("Auth: {}", user.auth);
+        msg!("Auth: {}", user_data.auth);
 
         Ok(())
     }
 
     pub fn claim_insecure(ctx: Context<InsecureClaim>, bump_seed: u8) -> Result<()> {
+        // Verify the user account address
         let address = Pubkey::create_program_address(
             &[ctx.accounts.payer.key().as_ref(), &[bump_seed]],
             ctx.program_id,
         )
         .unwrap();
-        if address != ctx.accounts.user.key() {
-            return Err(ProgramError::InvalidArgument.into());
-        }
+        require_keys_eq!(address, ctx.accounts.user.key(), ClaimError::InvalidUserAccount);
 
-        let mut user = UserInsecure::try_from_slice(&ctx.accounts.user.data.borrow()).unwrap();
+        // Deserialize the user account data
+        let mut user_data = UserInsecure::try_from_slice(&ctx.accounts.user.data.borrow()[DISCRIMINATOR_SIZE..])?;
 
-        require!(!user.rewards_claimed, ClaimError::AlreadyClaimed);
+        // Check if rewards have already been claimed
+        require!(!user_data.rewards_claimed, ClaimError::AlreadyClaimed);
 
+        // Mint tokens to the user's associated token account
         token::mint_to(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -70,14 +76,18 @@ pub mod bump_seed_canonicalization {
                 },
                 &[&[
                     "mint".as_bytes(),
-                    &[*ctx.bumps.get("mint_authority").unwrap()],
+                    &[ctx.bumps.mint_authority],
                 ]],
             ),
             10,
         )?;
 
-        user.rewards_claimed = true;
-        user.serialize(&mut *ctx.accounts.user.data.borrow_mut())?;
+        // Mark rewards as claimed
+        user_data.rewards_claimed = true;
+
+        // Serialize the updated user data back into the account
+        let mut user_account_data = ctx.accounts.user.try_borrow_mut_data()?;
+        user_account_data[DISCRIMINATOR_SIZE..].copy_from_slice(&user_data.try_to_vec()?);
 
         Ok(())
     }
@@ -85,9 +95,9 @@ pub mod bump_seed_canonicalization {
 
 #[derive(Accounts)]
 pub struct CreateUserInsecure<'info> {
+    /// CHECK: This account is intentionally unchecked and initialized in the instruction
     #[account(mut)]
-    /// CHECK: intentionally unchecked
-    pub user: AccountInfo<'info>,
+    pub user: UncheckedAccount<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -95,36 +105,37 @@ pub struct CreateUserInsecure<'info> {
 
 #[derive(Accounts)]
 pub struct InsecureClaim<'info> {
+    /// CHECK: This account is manually deserialized in the instruction
     #[account(mut)]
-    /// CHECK: intentionally unchecked
-    user: AccountInfo<'info>,
+    pub user: UncheckedAccount<'info>,
     #[account(mut)]
-    payer: Signer<'info>,
+    pub payer: Signer<'info>,
     #[account(
         init_if_needed,
-        payer=payer,
-        associated_token::mint=mint,
-        associated_token::authority=payer
+        payer = payer,
+        associated_token::mint = mint,
+        associated_token::authority = payer
     )]
-    user_ata: Account<'info, TokenAccount>,
+    pub user_ata: Account<'info, TokenAccount>,
     #[account(mut)]
-    mint: Account<'info, Mint>,
-    /// CHECK: mint auth PDA
+    pub mint: Account<'info, Mint>,
+    /// CHECK: This is the mint authority PDA, intentionally left unchecked
     #[account(seeds = ["mint".as_bytes()], bump)]
     pub mint_authority: UncheckedAccount<'info>,
-    token_program: Program<'info, Token>,
-    associated_token_program: Program<'info, AssociatedToken>,
-    system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
 
-#[account]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default, InitSpace)]
 pub struct UserInsecure {
-    auth: Pubkey,
-    rewards_claimed: bool,
+    pub auth: Pubkey,
+    pub rewards_claimed: bool,
 }
 
 #[error_code]
 pub enum ClaimError {
     AlreadyClaimed,
+    InvalidUserAccount,
 }
