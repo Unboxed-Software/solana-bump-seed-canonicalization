@@ -1,4 +1,4 @@
-# Arbitrary CPI Project
+# Bump Seed Canonicalization
 
 This project demonstrates the vulnerabilities associated with using PDAs derived without the canonical bump in Solana programs. Example code from the bump seed canonicalization lesson from the Solana Program Security course.
 
