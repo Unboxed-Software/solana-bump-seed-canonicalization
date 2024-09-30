@@ -1,161 +1,217 @@
-import * as anchor from "@project-serum/anchor"
-import { Program } from "@project-serum/anchor"
+import * as anchor from "@coral-xyz/anchor";
+import { Program } from "@coral-xyz/anchor";
+import { BumpSeedCanonicalization } from "../target/types/bump_seed_canonicalization";
+import { Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { airdropIfRequired } from "@solana-developers/helpers";
 import {
-  createProgramAddressSync,
-  findProgramAddressSync,
-} from "@project-serum/anchor/dist/cjs/utils/pubkey"
-import { expect } from "chai"
-import { BumpSeedCanonicalization } from "../target/types/bump_seed_canonicalization"
-import { Keypair } from "@solana/web3.js"
-import { safeAirdrop } from "./utils/utils"
-import { BN } from "bn.js"
-import {
-  createAssociatedTokenAccount,
   createMint,
   getAccount,
   getAssociatedTokenAddress,
-} from "@solana/spl-token"
+} from "@solana/spl-token";
+import { expect } from "chai";
 
-describe("bump-seed-canonicalization", async () => {
-  // Initialize testing environment
-  let provider, program, payer, mintAuthority, mint
+describe("Bump seed canonicalization", () => {
+  // Configure the client to use the local cluster.
+  anchor.setProvider(anchor.AnchorProvider.env());
+
+  const program = anchor.workspace
+    .BumpSeedCanonicalization as Program<BumpSeedCanonicalization>;
+  const connection = anchor.getProvider().connection;
+
+  let payer: Keypair;
+  let mint: anchor.web3.PublicKey;
+  let mintAuthority: anchor.web3.PublicKey;
 
   before(async () => {
-    anchor.setProvider(anchor.AnchorProvider.env())
-    provider = anchor.AnchorProvider.env()
-    program = anchor.workspace
-      .BumpSeedCanonicalization as Program<BumpSeedCanonicalization>
-    payer = Keypair.generate()
-    await safeAirdrop(payer.publicKey, provider.connection)
-    ;[mintAuthority] = findProgramAddressSync(
+    payer = Keypair.generate();
+    await airdropIfRequired(
+      connection,
+      payer.publicKey,
+      2 * LAMPORTS_PER_SOL,
+      1 * LAMPORTS_PER_SOL
+    );
+
+    [mintAuthority] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("mint")],
       program.programId
-    )
+    );
 
-    mint = await createMint(
-      provider.connection,
-      payer,
-      mintAuthority,
-      mintAuthority,
-      0
-    )
-  })
+    mint = await createMint(connection, payer, mintAuthority, mintAuthority, 0);
+  });
 
-  it("Attacker can claim more than reward limit with insecure instructions", async () => {
-    const attacker = Keypair.generate()
-    await safeAirdrop(attacker.publicKey, provider.connection)
-    const ataKey = await getAssociatedTokenAddress(mint, attacker.publicKey)
+  it("allows attacker to claim more than reward limit with insecure instruction handlers", async () => {
+    try {
+      const attacker = Keypair.generate();
+      await airdropIfRequired(
+        connection,
+        attacker.publicKey,
+        1 * LAMPORTS_PER_SOL,
+        1 * LAMPORTS_PER_SOL
+      );
+      const ataKey = await getAssociatedTokenAddress(mint, attacker.publicKey);
 
-    let numClaims = 0
+      let numClaims = 0;
 
-    for (let i = 0; i < 256; i++) {
-      try {
-        const pda = createProgramAddressSync(
-          [attacker.publicKey.toBuffer(), Buffer.from([i])],
-          program.programId
-        )
-        await program.methods
-          .createUserInsecure(i)
-          .accounts({
-            user: pda,
-            payer: attacker.publicKey,
-          })
-          .signers([attacker])
-          .rpc()
-        await program.methods
-          .claimInsecure(i)
-          .accounts({
-            user: pda,
-            mint,
-            payer: attacker.publicKey,
-            userAta: ataKey,
-          })
-          .signers([attacker])
-          .rpc()
+      for (let i = 0; i < 256; i++) {
+        try {
+          const pda = anchor.web3.PublicKey.createProgramAddressSync(
+            [attacker.publicKey.toBuffer(), Buffer.from([i])],
+            program.programId
+          );
+          await program.methods
+            .createUserInsecure(i)
+            .accounts({
+              user: pda,
+              payer: attacker.publicKey,
+            })
+            .signers([attacker])
+            .rpc();
+          await program.methods
+            .claimInsecure(i)
+            .accounts({
+              user: pda,
+              mint,
+              payer: attacker.publicKey,
+              userAta: ataKey,
+              mintAuthority,
+              tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+              associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+              systemProgram: anchor.web3.SystemProgram.programId,
+              rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+            })
+            .signers([attacker])
+            .rpc();
 
-        numClaims += 1
-      } catch (error) {
-        if (
-          error.message !== "Invalid seeds, address must fall off the curve"
-        ) {
-          console.log(error)
+          numClaims += 1;
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            !error.message.includes(
+              "Invalid seeds, address must fall off the curve"
+            )
+          ) {
+            console.error(error);
+          }
         }
       }
+
+      const ata = await getAccount(connection, ataKey);
+
+      console.log(
+        `Attacker claimed ${numClaims} times and got ${Number(
+          ata.amount
+        )} tokens`
+      );
+
+      expect(numClaims).to.be.greaterThan(1);
+      expect(Number(ata.amount)).to.be.greaterThan(10);
+    } catch (error) {
+      throw new Error(`Test failed: ${error.message}`);
     }
+  });
 
-    const ata = await getAccount(provider.connection, ataKey)
+  it("allows attacker to claim only once with secure instruction handlers", async () => {
+    try {
+      const attacker = Keypair.generate();
+      await airdropIfRequired(
+        connection,
+        attacker.publicKey,
+        1 * LAMPORTS_PER_SOL,
+        1 * LAMPORTS_PER_SOL
+      );
+      const ataKey = await getAssociatedTokenAddress(mint, attacker.publicKey);
+      const [userPDA] = anchor.web3.PublicKey.findProgramAddressSync(
+        [attacker.publicKey.toBuffer()],
+        program.programId
+      );
 
-    console.log(
-      `Attacker claimed ${numClaims} times and got ${Number(ata.amount)} tokens`
-    )
+      await program.methods
+        .createUserSecure()
+        .accounts({
+          payer: attacker.publicKey,
+          user: userPDA,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([attacker])
+        .rpc();
 
-    expect(numClaims).to.be.greaterThan(1)
-    expect(Number(ata.amount)).to.be.greaterThan(10)
-  })
+      await program.methods
+        .claimSecure()
+        .accounts({
+          payer: attacker.publicKey,
+          user: userPDA,
+          userAta: ataKey,
+          mint,
+          mintAuthority,
+          tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+          associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+        })
+        .signers([attacker])
+        .rpc();
 
-  it("Attacker can only claim once with secure instructions", async () => {
-    const attacker = Keypair.generate()
-    await safeAirdrop(attacker.publicKey, provider.connection)
-    const ataKey = await getAssociatedTokenAddress(mint, attacker.publicKey)
-    const [userPDA] = findProgramAddressSync(
-      [attacker.publicKey.toBuffer()],
-      program.programId
-    )
+      let numClaims = 1;
 
-    await program.methods
-      .createUserSecure()
-      .accounts({
-        payer: attacker.publicKey,
-      })
-      .signers([attacker])
-      .rpc()
+      for (let i = 0; i < 256; i++) {
+        try {
+          const pda = anchor.web3.PublicKey.createProgramAddressSync(
+            [attacker.publicKey.toBuffer(), Buffer.from([i])],
+            program.programId
+          );
+          await program.methods
+            .createUserSecure()
+            .accounts({
+              user: pda,
+              payer: attacker.publicKey,
+              systemProgram: anchor.web3.SystemProgram.programId,
+            })
+            .signers([attacker])
+            .rpc();
 
-    await program.methods
-      .claimSecure()
-      .accounts({
-        payer: attacker.publicKey,
-        userAta: ataKey,
-        mint,
-        user: userPDA,
-      })
-      .signers([attacker])
-      .rpc()
+          await program.methods
+            .claimSecure()
+            .accounts({
+              payer: attacker.publicKey,
+              user: pda,
+              userAta: ataKey,
+              mint,
+              mintAuthority,
+              tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+              associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+              systemProgram: anchor.web3.SystemProgram.programId,
+              rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+            })
+            .signers([attacker])
+            .rpc();
 
-    let numClaims = 1
+          numClaims += 1;
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            !error.message.includes("Error Number: 2006") &&
+            !error.message.includes(
+              "Invalid seeds, address must fall off the curve"
+            )
+          ) {
+            // Comment console error logs to see the test outputs properly
+            console.error(error);
+          }
+        }
+      }
 
-    for (let i = 0; i < 256; i++) {
-      try {
-        const pda = createProgramAddressSync(
-          [attacker.publicKey.toBuffer(), Buffer.from([i])],
-          program.programId
-        )
-        await program.methods
-          .createUserSecure()
-          .accounts({
-            user: pda,
-            payer: attacker.publicKey,
-          })
-          .signers([attacker])
-          .rpc()
+      const ata = await getAccount(connection, ataKey);
 
-        await program.methods
-          .claimSecure()
-          .accounts({
-            payer: attacker.publicKey,
-            userAta: ataKey,
-            mint,
-            user: pda,
-          })
-          .signers([attacker])
-          .rpc()
+      console.log(
+        `Attacker claimed ${numClaims} times and got ${Number(
+          ata.amount
+        )} tokens`
+      );
 
-        numClaims += 1
-      } catch {}
+      expect(Number(ata.amount)).to.equal(10);
+      expect(numClaims).to.equal(1);
+    } catch (error) {
+      throw new Error(`Test failed: ${error.message}`);
     }
-
-    const ata = await getAccount(provider.connection, ataKey)
-
-    expect(Number(ata.amount)).to.equal(10)
-    expect(numClaims).to.equal(1)
-  })
-})
+  });
+});
