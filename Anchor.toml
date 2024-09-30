@@ -1,15 +1,18 @@
+[toolchain]
+
 [features]
-seeds = true
+resolution = true
 skip-lint = false
+
 [programs.localnet]
-bump_seed_canonicalization = "HEeTz7bVJ5qSeTsPREXcyg6KCVjKW1gLogVaGXR6cwvU"
+bump_seed_canonicalization = "2aUjVCUm1awbmv8aZHZZ2gUzDxoRzFfrFc9CuubDqycn"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "Localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+test = "yarn run ts-mocha -r tsx -p ./tsconfig.json -t 1000000 tests/*.ts"
